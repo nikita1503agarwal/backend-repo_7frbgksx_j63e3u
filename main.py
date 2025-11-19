@@ -1,8 +1,14 @@
 import os
-from fastapi import FastAPI
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from bson import ObjectId
 
-app = FastAPI()
+from database import db, create_document, get_documents
+from schemas import Landlord, Property, WorkOrder, Certificate
+
+app = FastAPI(title="Property Asset Management API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -12,17 +18,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Helpers
+class IdModel(BaseModel):
+    id: str
+
+
+def ensure_object_id(id_str: str) -> ObjectId:
+    try:
+        return ObjectId(id_str)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid id format")
+
+
 @app.get("/")
 def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
+    return {"message": "Property Asset Management API is running"}
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
 
 @app.get("/test")
 def test_database():
-    """Test endpoint to check if database is available and accessible"""
     response = {
         "backend": "✅ Running",
         "database": "❌ Not Available",
@@ -31,38 +45,96 @@ def test_database():
         "connection_status": "Not Connected",
         "collections": []
     }
-    
     try:
-        # Try to import database module
-        from database import db
-        
         if db is not None:
             response["database"] = "✅ Available"
-            response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
+            response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
+            response["database_name"] = db.name
             response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
             try:
                 collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
+                response["collections"] = collections[:10]
                 response["database"] = "✅ Connected & Working"
             except Exception as e:
-                response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
+                response["database"] = f"⚠️  Connected but Error: {str(e)[:80]}"
         else:
             response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
     except Exception as e:
-        response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
-    response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
-    response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
+        response["database"] = f"❌ Error: {str(e)[:80]}"
     return response
+
+
+# Generic list endpoints for each schema
+@app.get("/api/landlords")
+def list_landlords(limit: int = 50):
+    docs = get_documents("landlord", {}, limit)
+    for d in docs:
+        d["id"] = str(d.pop("_id"))
+    return docs
+
+
+@app.post("/api/landlords")
+def create_landlord(payload: Landlord):
+    inserted_id = create_document("landlord", payload)
+    return {"id": inserted_id}
+
+
+@app.get("/api/properties")
+def list_properties(landlord_id: Optional[str] = None, limit: int = 50):
+    filt = {}
+    if landlord_id:
+        try:
+            filt["landlord_id"] = landlord_id
+        except Exception:
+            pass
+    docs = get_documents("property", filt, limit)
+    for d in docs:
+        d["id"] = str(d.pop("_id"))
+    return docs
+
+
+@app.post("/api/properties")
+def create_property(payload: Property):
+    inserted_id = create_document("property", payload)
+    return {"id": inserted_id}
+
+
+@app.get("/api/workorders")
+def list_workorders(property_id: Optional[str] = None, status: Optional[str] = None, limit: int = 50):
+    filt = {}
+    if property_id:
+        filt["property_id"] = property_id
+    if status:
+        filt["status"] = status
+    docs = get_documents("workorder", filt, limit)
+    for d in docs:
+        d["id"] = str(d.pop("_id"))
+    return docs
+
+
+@app.post("/api/workorders")
+def create_workorder(payload: WorkOrder):
+    inserted_id = create_document("workorder", payload)
+    return {"id": inserted_id}
+
+
+@app.get("/api/certificates")
+def list_certificates(property_id: Optional[str] = None, ctype: Optional[str] = None, limit: int = 50):
+    filt = {}
+    if property_id:
+        filt["property_id"] = property_id
+    if ctype:
+        filt["type"] = ctype
+    docs = get_documents("certificate", filt, limit)
+    for d in docs:
+        d["id"] = str(d.pop("_id"))
+    return docs
+
+
+@app.post("/api/certificates")
+def create_certificate(payload: Certificate):
+    inserted_id = create_document("certificate", payload)
+    return {"id": inserted_id}
 
 
 if __name__ == "__main__":

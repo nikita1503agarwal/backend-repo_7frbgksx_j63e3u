@@ -1,48 +1,49 @@
 """
-Database Schemas
+Database Schemas for Property Asset Management
 
-Define your MongoDB collection schemas here using Pydantic models.
-These schemas are used for data validation in your application.
-
-Each Pydantic model represents a collection in your database.
-Model name is converted to lowercase for the collection name:
-- User -> "user" collection
-- Product -> "product" collection
-- BlogPost -> "blogs" collection
+Each Pydantic model maps to a MongoDB collection (lowercased class name).
+- Landlord  -> "landlord"
+- Property  -> "property"
+- WorkOrder -> "workorder"
+- Certificate -> "certificate"
 """
 
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, EmailStr
+from typing import Optional, Literal
+from datetime import date
 
-# Example schemas (replace with your own):
+class Landlord(BaseModel):
+    name: str = Field(..., description="Full name or company name")
+    email: Optional[EmailStr] = Field(None, description="Contact email")
+    phone: Optional[str] = Field(None, description="Primary contact phone")
+    address: Optional[str] = Field(None, description="Registered address")
+    notes: Optional[str] = Field(None, description="Additional notes")
 
-class User(BaseModel):
-    """
-    Users collection schema
-    Collection name: "user" (lowercase of class name)
-    """
-    name: str = Field(..., description="Full name")
-    email: str = Field(..., description="Email address")
-    address: str = Field(..., description="Address")
-    age: Optional[int] = Field(None, ge=0, le=120, description="Age in years")
-    is_active: bool = Field(True, description="Whether user is active")
+class Property(BaseModel):
+    landlord_id: str = Field(..., description="Related landlord id (string)")
+    address_line1: str = Field(..., description="Address line 1")
+    address_line2: Optional[str] = Field(None, description="Address line 2")
+    city: str = Field(..., description="City")
+    postcode: str = Field(..., description="Postal code")
+    bedrooms: Optional[int] = Field(None, ge=0, description="Number of bedrooms")
+    gas_safe_required: bool = Field(True, description="Gas safety certificate required")
+    eicr_required: bool = Field(True, description="Electrical installation condition report required")
+    epc_required: bool = Field(True, description="Energy Performance Certificate required")
 
-class Product(BaseModel):
-    """
-    Products collection schema
-    Collection name: "product" (lowercase of class name)
-    """
-    title: str = Field(..., description="Product title")
-    description: Optional[str] = Field(None, description="Product description")
-    price: float = Field(..., ge=0, description="Price in dollars")
-    category: str = Field(..., description="Product category")
-    in_stock: bool = Field(True, description="Whether product is in stock")
+class WorkOrder(BaseModel):
+    property_id: str = Field(..., description="Related property id (string)")
+    title: str = Field(..., description="Work title")
+    description: Optional[str] = Field(None, description="Detailed description")
+    category: Literal['maintenance','repair','compliance','inspection'] = Field('maintenance', description="Work category")
+    status: Literal['new','scheduled','in_progress','completed','cancelled'] = Field('new', description="Current status")
+    scheduled_for: Optional[date] = Field(None, description="Scheduled date")
+    cost: Optional[float] = Field(None, ge=0, description="Estimated or final cost")
 
-# Add your own schemas here:
-# --------------------------------------------------
-
-# Note: The Flames database viewer will automatically:
-# 1. Read these schemas from GET /schema endpoint
-# 2. Use them for document validation when creating/editing
-# 3. Handle all database operations (CRUD) directly
-# 4. You don't need to create any database endpoints!
+class Certificate(BaseModel):
+    property_id: str = Field(..., description="Related property id (string)")
+    type: Literal['gas_safety','eicr','epc','boiler_service','smoke_alarm'] = Field(..., description="Certificate type")
+    certificate_number: Optional[str] = Field(None, description="Certificate/reference number")
+    issue_date: Optional[date] = Field(None, description="Issue date")
+    expiry_date: Optional[date] = Field(None, description="Expiry date")
+    uploaded_by: Optional[str] = Field(None, description="Name of person uploading/issuing")
+    notes: Optional[str] = Field(None, description="Additional notes")
