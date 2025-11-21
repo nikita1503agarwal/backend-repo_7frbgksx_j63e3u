@@ -1,17 +1,23 @@
 INFO:     Will watch for changes in these directories: ['/home/workspace']
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [638] using StatReload
-INFO:     Started server process [640]
+INFO:     Started reloader process [687] using StatReload
+INFO:     Started server process [689]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-INFO:     172.20.0.1:54792 - "HEAD / HTTP/1.1" 405 Method Not Allowed
-INFO:     172.20.0.1:59124 - "GET /api/workorders?limit=10 HTTP/1.1" 200 OK
-INFO:     172.20.0.1:59124 - "GET /api/workorders?limit=10 HTTP/1.1" 200 OK
-INFO:     172.20.0.1:59124 - "GET /api/landlords HTTP/1.1" 200 OK
-INFO:     172.20.0.1:59138 - "GET /api/properties HTTP/1.1" 200 OK
-INFO:     172.20.0.1:59148 - "GET /api/landlords HTTP/1.1" 200 OK
-INFO:     172.20.0.1:59146 - "GET /api/certificates?limit=10 HTTP/1.1" 200 OK
-INFO:     172.20.0.1:59124 - "GET /api/workorders?limit=10 HTTP/1.1" 200 OK
-INFO:     172.20.0.1:59146 - "GET /api/certificates?limit=10 HTTP/1.1" 200 OK
-INFO:     172.20.0.1:59124 - "GET /api/workorders?limit=10 HTTP/1.1" 200 OK
-INFO:     172.20.0.1:59138 - "GET /api/properties HTTP/1.1" 200 OK
+INFO:     172.20.0.1:56656 - "HEAD / HTTP/1.1" 405 Method Not Allowed
+INFO:     172.20.0.1:56668 - "GET /api/landlords HTTP/1.1" 200 OK
+INFO:     172.20.0.1:56672 - "GET /api/workorders?limit=10 HTTP/1.1" 200 OK
+INFO:     172.20.0.1:56668 - "GET /api/landlords HTTP/1.1" 200 OK
+INFO:     172.20.0.1:56672 - "GET /api/workorders?limit=10 HTTP/1.1" 200 OK
+INFO:     172.20.0.1:56682 - "GET /api/properties HTTP/1.1" 200 OK
+INFO:     172.20.0.1:56698 - "GET /api/certificates?limit=10 HTTP/1.1" 200 OK
+INFO:     172.20.0.1:56672 - "GET /api/properties HTTP/1.1" 200 OK
+INFO:     172.20.0.1:56682 - "GET /api/certificates?limit=10 HTTP/1.1" 200 OK
+INFO:     172.20.0.1:56706 - "GET /api/landlords HTTP/1.1" 200 OK
+INFO:     172.20.0.1:41802 - "GET /api/landlords HTTP/1.1" 200 OK
+INFO:     172.20.0.1:56706 - "GET /api/workorders?limit=10 HTTP/1.1" 200 OK
+INFO:     172.20.0.1:41802 - "GET /api/workorders?limit=10 HTTP/1.1" 200 OK
+INFO:     172.20.0.1:56720 - "GET /api/properties HTTP/1.1" 200 OK
+INFO:     172.20.0.1:41802 - "GET /api/properties HTTP/1.1" 200 OK
+INFO:     172.20.0.1:41796 - "GET /api/certificates?limit=10 HTTP/1.1" 200 OK
+INFO:     172.20.0.1:41802 - "GET /api/certificates?limit=10 HTTP/1.1" 200 OK
