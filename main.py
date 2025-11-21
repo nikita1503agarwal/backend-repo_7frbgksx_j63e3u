@@ -1,12 +1,17 @@
 import os
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from bson import ObjectId
+import csv
+import io
+from datetime import datetime, date
 
 from database import db, create_document, get_documents
-from schemas import Landlord, Property, WorkOrder, Certificate
+from schemas import Landlord, Property, WorkOrder, Certificate, ActivityLog, TenantIssue, LinkToken
 
 app = FastAPI(title="Property Asset Management API")
 
@@ -18,10 +23,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Serve uploaded files
+UPLOAD_DIR = os.path.join(os.getcwd(), 'uploads')
+CERT_DIR = os.path.join(UPLOAD_DIR, 'certificates')
+ISSUE_DIR = os.path.join(UPLOAD_DIR, 'issues')
+os.makedirs(CERT_DIR, exist_ok=True)
+os.makedirs(ISSUE_DIR, exist_ok=True)
+app.mount("/files", StaticFiles(directory=UPLOAD_DIR), name="files")
+
 # Helpers
 class IdModel(BaseModel):
     id: str
-
 
 def ensure_object_id(id_str: str) -> ObjectId:
     try:
@@ -29,6 +41,12 @@ def ensure_object_id(id_str: str) -> ObjectId:
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid id format")
 
+def log_action(action: str, entity: str, entity_id: Optional[str] = None, actor: Optional[str] = None, role: Optional[str] = None, details: Optional[str] = None):
+    try:
+        payload = ActivityLog(action=action, entity=entity, entity_id=entity_id, actor=actor, role=role, details=details)
+        create_document('activitylog', payload)
+    except Exception:
+        pass
 
 @app.get("/")
 def read_root():
@@ -63,8 +81,7 @@ def test_database():
         response["database"] = f"❌ Error: {str(e)[:80]}"
     return response
 
-
-# Generic list endpoints for each schema
+# Landlords
 @app.get("/api/landlords")
 def list_landlords(limit: int = 50):
     docs = get_documents("landlord", {}, limit)
@@ -76,29 +93,57 @@ def list_landlords(limit: int = 50):
 @app.post("/api/landlords")
 def create_landlord(payload: Landlord):
     inserted_id = create_document("landlord", payload)
+    log_action("create_landlord", "landlord", inserted_id)
     return {"id": inserted_id}
 
-
+# Properties
 @app.get("/api/properties")
 def list_properties(landlord_id: Optional[str] = None, limit: int = 50):
     filt = {}
     if landlord_id:
-        try:
-            filt["landlord_id"] = landlord_id
-        except Exception:
-            pass
+        filt["landlord_id"] = landlord_id
     docs = get_documents("property", filt, limit)
     for d in docs:
         d["id"] = str(d.pop("_id"))
     return docs
 
+@app.get("/api/properties/{property_id}")
+def get_property_detail(property_id: str):
+    prop = db['property'].find_one({"_id": ensure_object_id(property_id)})
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+    prop["id"] = str(prop.pop("_id"))
+    works = list(db['workorder'].find({"property_id": property_id}).sort("created_at", -1))
+    for w in works:
+        w["id"] = str(w.pop("_id"))
+    certs = list(db['certificate'].find({"property_id": property_id}).sort("created_at", -1))
+    for c in certs:
+        c["id"] = str(c.pop("_id"))
+    # upcoming renewals
+    upcoming = []
+    today = date.today()
+    for c in certs:
+        exp = c.get('expiry_date')
+        if isinstance(exp, datetime):
+            exp_d = exp.date()
+        else:
+            exp_d = exp
+        if exp_d:
+            delta = (exp_d - today).days
+            if delta <= 60:
+                upcoming.append({"type": c.get('type'), "expiry_date": exp_d.isoformat(), "days": delta})
+    issues = list(db['tenantissue'].find({"property_id": property_id}).sort("created_at", -1))
+    for i in issues:
+        i["id"] = str(i.pop("_id"))
+    return {"property": prop, "workorders": works, "certificates": certs, "upcoming": upcoming, "issues": issues}
 
 @app.post("/api/properties")
 def create_property(payload: Property):
     inserted_id = create_document("property", payload)
+    log_action("create_property", "property", inserted_id)
     return {"id": inserted_id}
 
-
+# Work Orders
 @app.get("/api/workorders")
 def list_workorders(property_id: Optional[str] = None, status: Optional[str] = None, limit: int = 50):
     filt = {}
@@ -111,13 +156,13 @@ def list_workorders(property_id: Optional[str] = None, status: Optional[str] = N
         d["id"] = str(d.pop("_id"))
     return docs
 
-
 @app.post("/api/workorders")
 def create_workorder(payload: WorkOrder):
     inserted_id = create_document("workorder", payload)
+    log_action("create_workorder", "workorder", inserted_id)
     return {"id": inserted_id}
 
-
+# Certificates
 @app.get("/api/certificates")
 def list_certificates(property_id: Optional[str] = None, ctype: Optional[str] = None, limit: int = 50):
     filt = {}
@@ -130,12 +175,212 @@ def list_certificates(property_id: Optional[str] = None, ctype: Optional[str] = 
         d["id"] = str(d.pop("_id"))
     return docs
 
+@app.get("/api/certificates/expiring")
+def list_expiring_certificates(days: int = 60):
+    today = date.today()
+    docs = get_documents("certificate", {}, 1000)
+    expiring = []
+    for d in docs:
+        d["id"] = str(d.pop("_id"))
+        exp = d.get('expiry_date')
+        exp_date = exp.date() if isinstance(exp, datetime) else exp
+        if exp_date:
+            delta = (exp_date - today).days
+            if delta <= days:
+                d['days_to_expiry'] = delta
+                expiring.append(d)
+    expiring.sort(key=lambda x: x.get('days_to_expiry', 9999))
+    return expiring
 
 @app.post("/api/certificates")
 def create_certificate(payload: Certificate):
     inserted_id = create_document("certificate", payload)
+    log_action("create_certificate", "certificate", inserted_id)
     return {"id": inserted_id}
 
+@app.post("/api/certificates/upload")
+async def upload_certificate(
+    property_id: str = Form(...),
+    type: str = Form(...),
+    certificate_number: Optional[str] = Form(None),
+    issue_date: Optional[str] = Form(None),
+    expiry_date: Optional[str] = Form(None),
+    uploaded_by: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
+    file: UploadFile = File(...)
+):
+    safe_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{file.filename}"
+    dest_path = os.path.join(CERT_DIR, safe_name)
+    with open(dest_path, 'wb') as f:
+        content = await file.read()
+        f.write(content)
+    cert = {
+        "property_id": property_id,
+        "type": type,
+        "certificate_number": certificate_number,
+        "uploaded_by": uploaded_by,
+        "notes": notes,
+        "file_path": f"/files/certificates/{safe_name}",
+        "file_name": file.filename
+    }
+    try:
+        if issue_date:
+            cert['issue_date'] = date.fromisoformat(issue_date)
+        if expiry_date:
+            cert['expiry_date'] = date.fromisoformat(expiry_date)
+    except Exception:
+        pass
+    inserted_id = create_document('certificate', cert)
+    log_action("upload_certificate", "certificate", inserted_id)
+    return {"id": inserted_id, "file_url": cert['file_path']}
+
+# CSV import/export and reports
+@app.post("/api/landlords/import_csv")
+async def import_landlords_csv(file: UploadFile = File(...)):
+    if not file.filename.lower().endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Please upload a CSV file")
+    content = await file.read()
+    text = content.decode('utf-8')
+    reader = csv.DictReader(io.StringIO(text))
+    inserted = 0
+    for row in reader:
+        payload = Landlord(
+            name=row.get('name') or row.get('Name') or '',
+            email=row.get('email') or row.get('Email'),
+            phone=row.get('phone') or row.get('Phone'),
+            address=row.get('address') or row.get('Address'),
+            notes=row.get('notes') or row.get('Notes')
+        )
+        if payload.name:
+            create_document('landlord', payload)
+            inserted += 1
+    log_action("import_landlords_csv", "landlord", details=f"inserted={inserted}")
+    return {"inserted": inserted}
+
+@app.get("/api/reports/summary")
+def summary_report():
+    landlords = list(db['landlord'].find())
+    properties = list(db['property'].find())
+    works = list(db['workorder'].find())
+    certs = list(db['certificate'].find())
+    summary = {
+        "landlords": len(landlords),
+        "properties": len(properties),
+        "workorders": len(works),
+        "certificates": len(certs)
+    }
+    return summary
+
+@app.get("/api/reports/landlords.csv")
+def landlords_csv():
+    landlords = list(db['landlord'].find())
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id","name","email","phone","address","notes"])
+    for l in landlords:
+        writer.writerow([str(l.get('_id')), l.get('name',''), l.get('email',''), l.get('phone',''), l.get('address',''), l.get('notes','')])
+    output.seek(0)
+    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=landlords.csv"})
+
+@app.get("/api/reports/rent-statement")
+def rent_statement(landlord_id: str, month: str):
+    try:
+        start = datetime.strptime(month + "-01", "%Y-%m-%d").date()
+        if start.month == 12:
+            end = date(start.year + 1, 1, 1)
+        else:
+            end = date(start.year, start.month + 1, 1)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid month format; use YYYY-MM")
+
+    props = list(db['property'].find({"landlord_id": landlord_id}))
+    prop_ids = [str(p.get('_id')) for p in props]
+    rent_total = sum([p.get('rent_amount') or 0 for p in props])
+
+    works = list(db['workorder'].find({
+        "property_id": {"$in": prop_ids},
+        "status": "completed",
+        "scheduled_for": {"$gte": start, "$lt": end}
+    }))
+    deductions = sum([w.get('cost') or 0 for w in works])
+
+    statement = {
+        "landlord_id": landlord_id,
+        "month": month,
+        "properties": [{"id": str(p.get('_id')), "address": f"{p.get('address_line1','')}, {p.get('city','')} {p.get('postcode','')}", "rent": p.get('rent_amount') or 0} for p in props],
+        "workorders": [{"id": str(w.get('_id')), "property_id": w.get('property_id'), "title": w.get('title'), "cost": w.get('cost') or 0} for w in works],
+        "rent_total": rent_total,
+        "deductions": deductions,
+        "net": rent_total - deductions
+    }
+    return statement
+
+# Activity
+@app.get("/api/activity")
+def list_activity(limit: int = 50):
+    logs = get_documents('activitylog', {}, limit)
+    for a in logs:
+        a['id'] = str(a.pop('_id'))
+    return logs
+
+# Tenant link + reporting
+@app.post("/api/tenant/link")
+def create_tenant_link(property_id: str):
+    token = os.urandom(16).hex()
+    doc = LinkToken(token=token, property_id=property_id)
+    create_document('linktoken', doc)
+    return {"token": token}
+
+@app.post("/api/tenant/report")
+async def tenant_report(
+    token: str = Form(...),
+    description: str = Form(...),
+    tenant_name: Optional[str] = Form(None),
+    tenant_contact: Optional[str] = Form(None),
+    priority: Optional[str] = Form('medium'),
+    photo: UploadFile | None = File(None)
+):
+    tok = db['linktoken'].find_one({"token": token})
+    if not tok:
+        raise HTTPException(status_code=400, detail="Invalid link token")
+    property_id = tok.get('property_id')
+
+    photos = []
+    if photo:
+        safe_name = f"issue_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{photo.filename}"
+        dest = os.path.join(ISSUE_DIR, safe_name)
+        with open(dest, 'wb') as f:
+            content = await photo.read()
+            f.write(content)
+        photos.append(f"/files/issues/{safe_name}")
+
+    issue = TenantIssue(property_id=property_id, tenant_name=tenant_name, tenant_contact=tenant_contact, description=description, priority=priority, photos=photos)
+    issue_id = create_document('tenantissue', issue)
+    log_action('tenant_report', 'tenantissue', issue_id)
+    return {"id": issue_id}
+
+# Operative: upload repair photos and add works
+@app.post("/api/operative/work")
+async def operative_add_work(
+    property_id: str = Form(...),
+    title: str = Form(...),
+    description: Optional[str] = Form(None),
+    category: Optional[str] = Form('repair'),
+    cost: Optional[float] = Form(None),
+    photo: UploadFile | None = File(None)
+):
+    photos = []
+    if photo:
+        safe_name = f"work_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{photo.filename}"
+        dest = os.path.join(ISSUE_DIR, safe_name)
+        with open(dest, 'wb') as f:
+            content = await photo.read()
+            f.write(content)
+        photos.append(f"/files/issues/{safe_name}")
+    wo = WorkOrder(property_id=property_id, title=title, description=description, category=category, status='in_progress', cost=cost, photos=photos)
+    wo_id = create_document('workorder', wo)
+    log_action('operative_add_work', 'workorder', wo_id)
+    return {"id": wo_id}
 
 if __name__ == "__main__":
     import uvicorn
