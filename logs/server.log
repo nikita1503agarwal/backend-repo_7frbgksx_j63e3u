@@ -1,11 +1,11 @@
 INFO:     Will watch for changes in these directories: ['/home/workspace']
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [845] using StatReload
-INFO:     Started server process [847]
+INFO:     Started reloader process [891] using StatReload
+INFO:     Started server process [893]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-INFO:     172.20.0.1:44064 - "HEAD / HTTP/1.1" 405 Method Not Allowed
-INFO:     172.20.0.1:54352 - "GET /api/workorders?operative_id=692081b13ea181ba4dfe93bc&status=in_progress HTTP/1.1" 200 OK
-INFO:     172.20.0.1:54352 - "GET /api/workorders?operative_id=692081b13ea181ba4dfe93bc&status=in_progress HTTP/1.1" 200 OK
-INFO:     172.20.0.1:54352 - "GET /api/workorders?operative_id=692081b13ea181ba4dfe93bc&status=new HTTP/1.1" 200 OK
-INFO:     172.20.0.1:54364 - "GET /api/workorders?operative_id=692081b13ea181ba4dfe93bc&status=new HTTP/1.1" 200 OK
+INFO:     172.20.0.1:42536 - "HEAD / HTTP/1.1" 405 Method Not Allowed
+INFO:     172.20.0.1:34760 - "GET /api/workorders?operative_id=692081b13ea181ba4dfe93bc&status=in_progress HTTP/1.1" 200 OK
+INFO:     172.20.0.1:34760 - "GET /api/workorders?operative_id=692081b13ea181ba4dfe93bc&status=in_progress HTTP/1.1" 200 OK
+INFO:     172.20.0.1:34776 - "GET /api/workorders?operative_id=692081b13ea181ba4dfe93bc&status=new HTTP/1.1" 200 OK
+INFO:     172.20.0.1:34760 - "GET /api/workorders?operative_id=692081b13ea181ba4dfe93bc&status=new HTTP/1.1" 200 OK
