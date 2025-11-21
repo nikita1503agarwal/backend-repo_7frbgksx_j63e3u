@@ -201,13 +201,13 @@ def operative_login(payload: OperativeLogin):
     token = create_user_token()
     if found:
         db['user'].update_one({"_id": found['_id']}, {"$set": {"role": "operative", "auth_token": token}})
-        user = found
+        user = db['user'].find_one({"_id": found['_id']})
     else:
         user_doc = User(email=payload.email, role='operative', auth_token=token)
         inserted_id = create_document('user', user_doc)
         user = db['user'].find_one({"_id": ensure_object_id(inserted_id)})
     log_action('operative_login', 'user', str(user['_id']), actor=payload.email, role='operative')
-    return {"token": token}
+    return {"token": token, "operative_id": str(user.get('_id')), "email": user.get('email')}
 
 class JobStart(BaseModel):
     workorder_id: str
