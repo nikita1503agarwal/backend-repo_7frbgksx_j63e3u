@@ -5,7 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from bson import ObjectId
+from bson import ObjectId, Regex
+import re
 import csv
 import io
 from datetime import datetime, date
@@ -169,6 +170,48 @@ def create_property(payload: Property):
     log_action("create_property", "property", inserted_id)
     return {"id": inserted_id}
 
+# Property search/validation
+@app.get("/api/properties/search")
+def search_properties(query: str, limit: int = 10):
+    if not query or len(query.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Query too short")
+    q = query.strip()
+    regex = {"$regex": q, "$options": "i"}
+    filt = {"$or": [
+        {"address_line1": regex},
+        {"address_line2": regex},
+        {"city": regex},
+        {"postcode": regex}
+    ]}
+    docs = list(db['property'].find(filt).limit(limit))
+    results = []
+    for d in docs:
+        d_id = str(d.get('_id'))
+        addr = f"{d.get('address_line1','')}, {d.get('city','')} {d.get('postcode','')}".strip()
+        results.append({"id": d_id, "address": addr})
+    return {"results": results}
+
+@app.get("/api/properties/validate")
+def validate_property(address: str):
+    q = address.strip()
+    if not q:
+        return {"valid": False, "matches": []}
+    regex = {"$regex": q, "$options": "i"}
+    filt = {"$or": [
+        {"address_line1": regex},
+        {"address_line2": regex},
+        {"city": regex},
+        {"postcode": regex}
+    ]}
+    docs = list(db['property'].find(filt).limit(5))
+    matches = []
+    for d in docs:
+        matches.append({
+            "id": str(d.get('_id')),
+            "address": f"{d.get('address_line1','')}, {d.get('city','')} {d.get('postcode','')}".strip()
+        })
+    return {"valid": len(matches) > 0, "matches": matches}
+
 # Work Orders
 @app.get("/api/workorders")
 def list_workorders(property_id: Optional[str] = None, status: Optional[str] = None, operative_id: Optional[str] = None, limit: int = 50):
@@ -186,6 +229,10 @@ def list_workorders(property_id: Optional[str] = None, status: Optional[str] = N
 
 @app.post("/api/workorders")
 def create_workorder(payload: WorkOrder):
+    # Validate property exists before creating a work order
+    prop = db['property'].find_one({"_id": ensure_object_id(payload.property_id)}) if payload.property_id else None
+    if not prop:
+        raise HTTPException(status_code=400, detail="Unknown property. This may not be a managed property.")
     inserted_id = create_document("workorder", payload)
     log_action("create_workorder", "workorder", inserted_id)
     return {"id": inserted_id}
@@ -453,6 +500,41 @@ async def tenant_report(
     log_action('tenant_report', 'tenantissue', issue_id)
     return {"id": issue_id}
 
+# Tenant: send email on behalf (activity log placeholder)
+class TenantEmail(BaseModel):
+    intent: str
+    name: Optional[str] = None
+    contact: Optional[str] = None
+    address: Optional[str] = None
+    details: Optional[str] = None
+    priority: Optional[str] = None
+
+@app.post("/api/tenant/send_email")
+def tenant_send_email(payload: TenantEmail):
+    # validate managed property when address provided
+    if payload.address:
+        regex = {"$regex": payload.address.strip(), "$options": "i"}
+        filt = {"$or": [
+            {"address_line1": regex},
+            {"address_line2": regex},
+            {"city": regex},
+            {"postcode": regex}
+        ]}
+        prop = db['property'].find_one(filt)
+        if not prop:
+            raise HTTPException(status_code=400, detail="We couldn't find this address in our system. It may not be a managed property.")
+    # log as email activity (placeholder for real email service)
+    summary = {
+        "intent": payload.intent,
+        "name": payload.name,
+        "contact": payload.contact,
+        "address": payload.address,
+        "details": payload.details,
+        "priority": payload.priority,
+    }
+    log_action('tenant_send_email', 'tenant', details=str(summary))
+    return {"ok": True}
+
 # Operative: upload repair photos and add works
 @app.post("/api/operative/work")
 async def operative_add_work(
@@ -471,7 +553,7 @@ async def operative_add_work(
             content = await photo.read()
             f.write(content)
         photos.append(f"/files/issues/{safe_name}")
-    wo = WorkOrder(property_id=property_id, title=title, description=description, category=category, status='in_progress', cost=cost, photos=photos)
+    wo = WorkOrder(property_id=property_id, title=title, description=description, category=category, status='in_progress', cost=None, photos=photos)
     wo_id = create_document('workorder', wo)
     log_action('operative_add_work', 'workorder', wo_id)
     return {"id": wo_id}
@@ -571,6 +653,10 @@ async def admin_quick_add_submit(
         log_action('admin_quick_add_issue', 'tenantissue', created_id, actor='admin', role='admin')
     else:
         # default to workorder
+        # validate property
+        prop = db['property'].find_one({"_id": ensure_object_id(property_id)})
+        if not prop:
+            return HTMLResponse("<h1>Error</h1><p>Unknown property. Not a managed property.</p>", status_code=400)
         wo = WorkOrder(property_id=property_id, title=title or 'Quick Work Order', description=description, category='maintenance', status='new', cost=None, photos=photos)
         created_id = create_document('workorder', wo)
         log_action('admin_quick_add_workorder', 'workorder', created_id, actor='admin', role='admin')
@@ -588,6 +674,48 @@ async def admin_quick_add_submit(
     </html>
     """
     return HTMLResponse(html)
+
+# Admin: Seed a work order for an operative by email and property address
+class SeedWorkOrderPayload(BaseModel):
+    operative_email: str
+    address: str
+    title: Optional[str] = "Test job"
+    description: Optional[str] = "Seeded job for testing"
+    category: Optional[str] = "maintenance"
+
+@app.post("/api/admin/seed_workorder_for_operative")
+def seed_workorder_for_operative(payload: SeedWorkOrderPayload, request: Request, token: Optional[str] = None):
+    if not is_admin(request, token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    # find property by address
+    q = payload.address.strip()
+    regex = {"$regex": q, "$options": "i"}
+    filt = {"$or": [
+        {"address_line1": regex},
+        {"address_line2": regex},
+        {"city": regex},
+        {"postcode": regex}
+    ]}
+    prop = db['property'].find_one(filt)
+    if not prop:
+        raise HTTPException(status_code=400, detail="No matching property found. Not a managed property.")
+    property_id = str(prop.get('_id'))
+    # ensure operative user exists and get id
+    existing = db['user'].find_one({"email": payload.operative_email})
+    if existing:
+        operative_id = str(existing.get('_id'))
+        # ensure role operative
+        db['user'].update_one({"_id": existing.get('_id')}, {"$set": {"role": "operative"}})
+    else:
+        user_doc = User(email=payload.operative_email, role='operative', auth_token=create_user_token())
+        inserted_id = create_document('user', user_doc)
+        operative_id = inserted_id
+    # create workorder assigned
+    wo = WorkOrder(property_id=property_id, title=payload.title, description=payload.description, category=payload.category, status='new', cost=None, photos=[])
+    wo_id = create_document('workorder', wo)
+    db['workorder'].update_one({"_id": ensure_object_id(wo_id)}, {"$set": {"operative_id": operative_id}})
+    log_action('seed_workorder_for_operative', 'workorder', wo_id, actor='admin', role='admin', details=f"operative={payload.operative_email}")
+    return {"id": wo_id, "property_id": property_id, "operative_id": operative_id}
 
 if __name__ == "__main__":
     import uvicorn
