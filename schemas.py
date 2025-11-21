@@ -16,6 +16,10 @@ from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, Literal, List
 from datetime import date, datetime
 
+class Location(BaseModel):
+    lat: float
+    lng: float
+
 class Landlord(BaseModel):
     name: str = Field(..., description="Full name or company name")
     email: Optional[EmailStr] = Field(None, description="Contact email")
@@ -45,6 +49,11 @@ class WorkOrder(BaseModel):
     scheduled_for: Optional[date] = Field(None, description="Scheduled date")
     cost: Optional[float] = Field(None, ge=0, description="Estimated or final cost")
     photos: Optional[List[str]] = Field(default=None, description="List of photo URLs")
+    operative_id: Optional[str] = Field(None, description="Assigned operative user id")
+    started_at: Optional[datetime] = Field(None, description="When operative started the job")
+    started_location: Optional[Location] = Field(None, description="Geolocation where job was started")
+    completed_at: Optional[datetime] = Field(None, description="When operative completed the job")
+    completed_location: Optional[Location] = Field(None, description="Geolocation where job was completed")
 
 class Certificate(BaseModel):
     property_id: str = Field(..., description="Related property id (string)")
@@ -70,6 +79,7 @@ class User(BaseModel):
     email: EmailStr
     name: Optional[str] = None
     role: Literal['admin','manager','viewer','operative'] = 'viewer'
+    auth_token: Optional[str] = None
 
 class TenantIssue(BaseModel):
     property_id: str = Field(...)

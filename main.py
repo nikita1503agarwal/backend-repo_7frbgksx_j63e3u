@@ -1,6 +1,6 @@
 import os
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,7 +11,7 @@ import io
 from datetime import datetime, date
 
 from database import db, create_document, get_documents
-from schemas import Landlord, Property, WorkOrder, Certificate, ActivityLog, TenantIssue, LinkToken
+from schemas import Landlord, Property, WorkOrder, Certificate, ActivityLog, TenantIssue, LinkToken, User, Location
 
 app = FastAPI(title="Property Asset Management API")
 
@@ -58,6 +58,21 @@ def is_admin(request: Request, token_query: Optional[str]) -> bool:
     header_token = request.headers.get(ADMIN_HEADER)
     admin_token = get_admin_token()
     return (token_query is not None and token_query == admin_token) or (header_token is not None and header_token == admin_token)
+
+# Operative auth helpers
+OPERATIVE_HEADER = "X-Operative-Token"
+
+def create_user_token() -> str:
+    return os.urandom(16).hex()
+
+async def get_current_operative(operative_token: Optional[str] = Header(None, alias=OPERATIVE_HEADER)):
+    if not operative_token:
+        raise HTTPException(status_code=401, detail="Missing operative token")
+    user = db['user'].find_one({"auth_token": operative_token, "role": "operative"})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid operative token")
+    user['id'] = str(user.pop('_id'))
+    return user
 
 @app.get("/")
 def read_root():
@@ -156,12 +171,14 @@ def create_property(payload: Property):
 
 # Work Orders
 @app.get("/api/workorders")
-def list_workorders(property_id: Optional[str] = None, status: Optional[str] = None, limit: int = 50):
+def list_workorders(property_id: Optional[str] = None, status: Optional[str] = None, operative_id: Optional[str] = None, limit: int = 50):
     filt = {}
     if property_id:
         filt["property_id"] = property_id
     if status:
         filt["status"] = status
+    if operative_id:
+        filt["operative_id"] = operative_id
     docs = get_documents("workorder", filt, limit)
     for d in docs:
         d["id"] = str(d.pop("_id"))
@@ -172,6 +189,72 @@ def create_workorder(payload: WorkOrder):
     inserted_id = create_document("workorder", payload)
     log_action("create_workorder", "workorder", inserted_id)
     return {"id": inserted_id}
+
+# Operative auth & job lifecycle
+class OperativeLogin(BaseModel):
+    email: str
+
+@app.post("/api/operative/login")
+def operative_login(payload: OperativeLogin):
+    # find or create operative user and issue token
+    found = db['user'].find_one({"email": payload.email})
+    token = create_user_token()
+    if found:
+        db['user'].update_one({"_id": found['_id']}, {"$set": {"role": "operative", "auth_token": token}})
+        user = found
+    else:
+        user_doc = User(email=payload.email, role='operative', auth_token=token)
+        inserted_id = create_document('user', user_doc)
+        user = db['user'].find_one({"_id": ensure_object_id(inserted_id)})
+    log_action('operative_login', 'user', str(user['_id']), actor=payload.email, role='operative')
+    return {"token": token}
+
+class JobStart(BaseModel):
+    workorder_id: str
+    location: Optional[Location] = None
+
+@app.post("/api/operative/start")
+def start_job(payload: JobStart, user=Depends(get_current_operative)):
+    # set in_progress and timestamp/location
+    now = datetime.utcnow()
+    update = {
+        "$set": {
+            "status": "in_progress",
+            "started_at": now,
+            "operative_id": user['id']
+        }
+    }
+    if payload.location:
+        update["$set"]["started_location"] = payload.location.dict()
+    res = db['workorder'].update_one({"_id": ensure_object_id(payload.workorder_id)}, update)
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    log_action('operative_start', 'workorder', payload.workorder_id, actor=user.get('email'), role='operative')
+    return {"ok": True}
+
+class JobComplete(BaseModel):
+    workorder_id: str
+    location: Optional[Location] = None
+    notes: Optional[str] = None
+
+@app.post("/api/operative/complete")
+def complete_job(payload: JobComplete, user=Depends(get_current_operative)):
+    now = datetime.utcnow()
+    update = {
+        "$set": {
+            "status": "completed",
+            "completed_at": now
+        }
+    }
+    if payload.location:
+        update["$set"]["completed_location"] = payload.location.dict()
+    if payload.notes:
+        update["$set"]["description"] = payload.notes
+    res = db['workorder'].update_one({"_id": ensure_object_id(payload.workorder_id)}, update)
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    log_action('operative_complete', 'workorder', payload.workorder_id, actor=user.get('email'), role='operative')
+    return {"ok": True}
 
 # Certificates
 @app.get("/api/certificates")
@@ -400,8 +483,7 @@ async def admin_quick_add_form(request: Request, token: Optional[str] = None):
         return HTMLResponse("<h1>Unauthorized</h1><p>Missing or invalid admin token.</p>", status_code=401)
     html = f"""
     <!doctype html>
-    <html lang=\"en\">
-    <head>
+    <html lang=\"en\">\n    <head>
       <meta charset=\"utf-8\" />
       <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
       <title>Admin Quick Add</title>
@@ -417,26 +499,21 @@ async def admin_quick_add_form(request: Request, token: Optional[str] = None):
       </style>
     </head>
     <body>
-      <div class=\"card\">
-        <h1>Admin Quick Add</h1>
+      <div class=\"card\">\n        <h1>Admin Quick Add</h1>
         <p class=\"muted\">Create a quick Work Order or Tenant Issue. Uploading a photo is optional.</p>
-        <form method=\"post\" action=\"/admin/quick-add?token={token or ''}\" enctype=\"multipart/form-data\">
-          <label>Type
-            <select name=\"type\">
-              <option value=\"workorder\">Work Order</option>
+        <form method=\"post\" action=\"/admin/quick-add?token={token or ''}\" enctype=\"multipart/form-data\">\n          <label>Type
+            <select name=\"type\">\n              <option value=\"workorder\">Work Order</option>
               <option value=\"issue\">Tenant Issue</option>
             </select>
           </label>
-          <div class=\"row\">
-            <div>
+          <div class=\"row\">\n            <div>
               <label>Property ID
                 <input name=\"property_id\" placeholder=\"e.g. 65f...\" required />
               </label>
             </div>
             <div>
               <label>Priority (for Issues)
-                <select name=\"priority\">
-                  <option value=\"low\">Low</option>
+                <select name=\"priority\">\n                  <option value=\"low\">Low</option>
                   <option value=\"medium\" selected>Medium</option>
                   <option value=\"high\">High</option>
                 </select>
