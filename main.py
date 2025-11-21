@@ -1,8 +1,8 @@
 import os
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from bson import ObjectId
@@ -47,6 +47,17 @@ def log_action(action: str, entity: str, entity_id: Optional[str] = None, actor:
         create_document('activitylog', payload)
     except Exception:
         pass
+
+# Admin auth helper
+ADMIN_HEADER = "X-Admin-Token"
+
+def get_admin_token() -> str:
+    return os.getenv("ADMIN_TOKEN", "secret-admin-token")
+
+def is_admin(request: Request, token_query: Optional[str]) -> bool:
+    header_token = request.headers.get(ADMIN_HEADER)
+    admin_token = get_admin_token()
+    return (token_query is not None and token_query == admin_token) or (header_token is not None and header_token == admin_token)
 
 @app.get("/")
 def read_root():
@@ -381,6 +392,125 @@ async def operative_add_work(
     wo_id = create_document('workorder', wo)
     log_action('operative_add_work', 'workorder', wo_id)
     return {"id": wo_id}
+
+# Admin Quick Add (HTML form)
+@app.get("/admin/quick-add", response_class=HTMLResponse)
+async def admin_quick_add_form(request: Request, token: Optional[str] = None):
+    if not is_admin(request, token):
+        return HTMLResponse("<h1>Unauthorized</h1><p>Missing or invalid admin token.</p>", status_code=401)
+    html = f"""
+    <!doctype html>
+    <html lang=\"en\">
+    <head>
+      <meta charset=\"utf-8\" />
+      <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+      <title>Admin Quick Add</title>
+      <style>
+        body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #0f172a; }}
+        .card {{ max-width: 720px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; box-shadow: 0 4px 14px rgba(0,0,0,0.06); }}
+        label {{ display: block; margin-top: 12px; font-weight: 600; }}
+        input, select, textarea {{ width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; margin-top: 6px; }}
+        textarea {{ min-height: 100px; }}
+        .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+        button {{ margin-top: 16px; background: #0ea5e9; color: white; border: 0; padding: 10px 14px; border-radius: 10px; cursor: pointer; }}
+        .muted {{ color: #64748b; font-size: 14px; }}
+      </style>
+    </head>
+    <body>
+      <div class=\"card\">
+        <h1>Admin Quick Add</h1>
+        <p class=\"muted\">Create a quick Work Order or Tenant Issue. Uploading a photo is optional.</p>
+        <form method=\"post\" action=\"/admin/quick-add?token={token or ''}\" enctype=\"multipart/form-data\">
+          <label>Type
+            <select name=\"type\">
+              <option value=\"workorder\">Work Order</option>
+              <option value=\"issue\">Tenant Issue</option>
+            </select>
+          </label>
+          <div class=\"row\">
+            <div>
+              <label>Property ID
+                <input name=\"property_id\" placeholder=\"e.g. 65f...\" required />
+              </label>
+            </div>
+            <div>
+              <label>Priority (for Issues)
+                <select name=\"priority\">
+                  <option value=\"low\">Low</option>
+                  <option value=\"medium\" selected>Medium</option>
+                  <option value=\"high\">High</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <label>Title
+            <input name=\"title\" placeholder=\"Short title\" />
+          </label>
+          <label>Description
+            <textarea name=\"description\" placeholder=\"Describe the work or issue...\"></textarea>
+          </label>
+          <label>Photo (optional)
+            <input type=\"file\" name=\"photo\" accept=\"image/*\" />
+          </label>
+          <button type=\"submit\">Create</button>
+        </form>
+        <p class=\"muted\" style=\"margin-top:12px\">Auth: pass token via URL (?token=...) or header X-Admin-Token</p>
+      </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(html)
+
+@app.post("/admin/quick-add", response_class=HTMLResponse)
+async def admin_quick_add_submit(
+    request: Request,
+    token: Optional[str] = None,
+    type: str = Form('workorder'),
+    property_id: str = Form(...),
+    title: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    priority: Optional[str] = Form('medium'),
+    photo: UploadFile | None = File(None)
+):
+    if not is_admin(request, token):
+        return HTMLResponse("<h1>Unauthorized</h1><p>Missing or invalid admin token.</p>", status_code=401)
+
+    created_id = None
+    file_url = None
+
+    photos = []
+    if photo:
+        safe_name = f"admin_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{photo.filename}"
+        dest = os.path.join(ISSUE_DIR, safe_name)
+        with open(dest, 'wb') as f:
+            content = await photo.read()
+            f.write(content)
+        file_url = f"/files/issues/{safe_name}"
+        photos.append(file_url)
+
+    if type == 'issue':
+        issue = TenantIssue(property_id=property_id, tenant_name=None, tenant_contact=None, description=description or (title or ''), priority=priority, photos=photos)
+        created_id = create_document('tenantissue', issue)
+        log_action('admin_quick_add_issue', 'tenantissue', created_id, actor='admin', role='admin')
+    else:
+        # default to workorder
+        wo = WorkOrder(property_id=property_id, title=title or 'Quick Work Order', description=description, category='maintenance', status='new', cost=None, photos=photos)
+        created_id = create_document('workorder', wo)
+        log_action('admin_quick_add_workorder', 'workorder', created_id, actor='admin', role='admin')
+
+    html = f"""
+    <!doctype html>
+    <html lang=\"en\">\n<head><meta charset=\"utf-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><title>Created</title>
+    <style>body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; padding: 24px; color: #0f172a; }}</style></head>
+    <body>
+      <h1>Created successfully</h1>
+      <p>ID: {created_id}</p>
+      {f"<p>Photo: <a href='{file_url}' target='_blank'>{file_url}</a></p>" if file_url else ""}
+      <p><a href=\"/admin/quick-add?token={token or ''}\">Create another</a></p>
+    </body>
+    </html>
+    """
+    return HTMLResponse(html)
 
 if __name__ == "__main__":
     import uvicorn
