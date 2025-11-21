@@ -717,6 +717,57 @@ def seed_workorder_for_operative(payload: SeedWorkOrderPayload, request: Request
     log_action('seed_workorder_for_operative', 'workorder', wo_id, actor='admin', role='admin', details=f"operative={payload.operative_email}")
     return {"id": wo_id, "property_id": property_id, "operative_id": operative_id}
 
+# Dev: tokenless seed for testing environments
+class DevSeedPayload(BaseModel):
+    operative_email: str
+    address: str
+    title: Optional[str] = "Test job"
+    description: Optional[str] = "Seeded job for testing"
+    category: Optional[str] = "maintenance"
+
+@app.post("/api/dev/seed")
+def dev_seed(payload: DevSeedPayload):
+    if os.getenv("ALLOW_DEV_SEED", "1") != "1":
+        raise HTTPException(status_code=403, detail="Dev seeding disabled")
+    # find property by address; if missing, create a minimal property
+    q = payload.address.strip()
+    regex = {"$regex": q, "$options": "i"}
+    filt = {"$or": [
+        {"address_line1": regex},
+        {"address_line2": regex},
+        {"city": regex},
+        {"postcode": regex}
+    ]}
+    prop = db['property'].find_one(filt)
+    if not prop:
+        # create minimal property
+        new_prop = Property(
+            landlord_id=None,
+            address_line1=payload.address,
+            address_line2=None,
+            city="",
+            postcode="",
+            rent_amount=None,
+            notes="Auto-created via dev seed"
+        )
+        property_id = create_document('property', new_prop)
+    else:
+        property_id = str(prop.get('_id'))
+    # ensure operative exists
+    existing = db['user'].find_one({"email": payload.operative_email})
+    if existing:
+        operative_id = str(existing.get('_id'))
+        db['user'].update_one({"_id": existing.get('_id')}, {"$set": {"role": "operative"}})
+    else:
+        user_doc = User(email=payload.operative_email, role='operative', auth_token=create_user_token())
+        operative_id = create_document('user', user_doc)
+    # create and assign workorder
+    wo = WorkOrder(property_id=property_id, title=payload.title, description=payload.description, category=payload.category, status='new', cost=None, photos=[])
+    wo_id = create_document('workorder', wo)
+    db['workorder'].update_one({"_id": ensure_object_id(wo_id)}, {"$set": {"operative_id": operative_id}})
+    log_action('dev_seed_workorder', 'workorder', wo_id, actor='dev', role='dev', details=f"operative={payload.operative_email}")
+    return {"id": wo_id, "property_id": property_id, "operative_id": operative_id}
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
